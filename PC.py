@@ -9,6 +9,13 @@ straight edge, and if any component between two edges meets criteria to be
 considered a hinge.  It creates a graph showing the results and outputs the data
 to the command line.
 
+
+Modification Log:
+  30-Jul-2019: -Initial port from Igor.
+  31-Jul-2019: -Added movement of edges forward to search for better match, then
+                rock back a bit to check for an extended start/end point.
+               -Modified user output, including working timer.
+
 """
 
 
@@ -50,7 +57,6 @@ args=parser.parse_args()
 
 #Store the time to output it at the end.
 timer_start = time.time()
-tt = time.time()
 
 
 
@@ -171,7 +177,7 @@ while True:
         standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
         
         #Now, test that standard deviation.
-        if(standardDeviation <= float(args.tolerance_angle_max_forside)):
+        if standardDeviation <= float(args.tolerance_angle_max_forside):
             
             #We successfully found points that can be considered a side, so now
             # want to look further along the rim to determine if any more
@@ -186,29 +192,71 @@ while True:
             #We have our maximum-length rim section that qualifies as an edge,
             # so now re-calculate the standard deviation of the bearing of the
             # points within it.
-            reference_standardDeviation = standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
+            reference_standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
             
-#            #Determine if we want to contract the edge at all.  This is only
-#            # potentially -1 rim point on either end and is going to be done if
-#            # removing the point significantly shrinks the standard deviation of
-#            # the bearing of the full edge identified above.
-#            flag_start_increase = 0
-#            flag_stop_decrease  = 0
-#            standardDeviation = np.std(bearing[counter_point_start+1:counter_point_end+1], ddof=1)
-#            if reference_standardDeviation > 1.25*standardDeviation:
-#                flag_start_increase += 1
-#            standardDeviation = np.std(bearing[counter_point_start:counter_point_end], ddof=1)
-#            if reference_standardDeviation > 1.25*standardDeviation:
-#                flag_stop_decrease   += 1
-#            counter_point_start += flag_start_increase
-#            counter_point_end   += flag_stop_decrease
-
-            #TO DO:  See if shifting the edge back-and-forth at all allows it to
-            # be extended, such as by lower standard deviation.
-
+            #See if shifting the edge back-and-forth at all allows it to be
+            # extended or shifted to better represent an edge.
+            shift_start = +1
+            shift_end = +1
+            reference_length = dist_INT[counter_point_end+1]-dist_INT[counter_point_start]
+            while True:
+                
+                #Start off by shifting 1 point along the rim.
+                counter_point_start_test = counter_point_start + shift_start
+                counter_point_end_test   = counter_point_end   + shift_end
+                
+                #Ensure the length is still long enough for our threshold; if
+                # not, increase the end point until it is.
+                if dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test] < float(args.tolerance_distance_min_forside):
+                    while True:
+                        shift_end += 1
+                        counter_point_end_test = counter_point_end + shift_end
+                        if dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test] >= float(args.tolerance_distance_min_forside):
+                            break   #break if it's long enough
+                        if counter_point_end + shift_end >= len(rim_data):
+                            break   #break if we go over the edge -- TO DO: Make wrap-around aware.
+            
+                #Now check to see if the standard deviation of the bearings both
+                # meets our requirements for a maximum to still be a side, and
+                # is better than the original side we found.  If it is, then set
+                # new reference values and set the shifts to go further.  If not
+                # then decrease the shift back to the previous loop, and break.
+                standardDeviation = np.std(bearing[counter_point_start_test:counter_point_end_test+1], ddof=1)
+                if (standardDeviation <= float(args.tolerance_angle_max_forside)) and (standardDeviation < reference_standardDeviation):
+                    shift_start += 1
+                    shift_end   += 1
+                    reference_length = dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test]
+                    reference_standardDeviation = np.std(bearing[counter_point_start_test:counter_point_end_test+1], ddof=1)
+                else:
+                    shift_start -= 1
+                    shift_end   -= 1
+                    break
+            
+            #Set the start/end points to the results from above.
+            counter_point_start += shift_start
+            counter_point_end   += shift_end
+            
+            #Determine if we can correct back at all, possibly extending either
+            # start or end by one point.  We still need to check angular varia-
+            # tion, but since we are EXTENDING the sides, we don't need to check
+            # for length.
+            flag_start_decrease = 0
+            flag_stop_increase  = 0
+            if counter_point_start >= 1:    #TO DO: Make wrap-around-aware
+                standardDeviation = np.std(bearing[counter_point_start-1:counter_point_end+1], ddof=1)
+                if standardDeviation <= float(args.tolerance_angle_max_forside):
+                    flag_start_decrease -= 1
+                counter_point_start += flag_start_decrease
+            if counter_point_end+2 <= len(rim_data):    #TO DO: Make wrap-around-aware
+                standardDeviation = np.std(bearing[counter_point_start:counter_point_end+2], ddof=1)
+                if standardDeviation <= float(args.tolerance_angle_max_forside):
+                    flag_stop_increase  += 1
+                counter_point_end   += flag_stop_increase
+            reference_standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
+            reference_length = dist_INT[counter_point_end+1]-dist_INT[counter_point_start]
+            
             #Now that we have the for-realz edge start/end indices, store them.
             array_sides.append([counter_point_start,counter_point_end+1])
-#            print("side",array_sides[len(array_sides)-1])
 
             #Since we have a real edge, store the average bearing of this side.
             array_angles.append(np.mean(bearing[counter_point_start:counter_point_end+1]))
@@ -262,17 +310,23 @@ if(dist_INT[array_sides[0][0]]+(dist_INT[len(dist_INT)-1]-dist_INT[array_sides[l
 print("\nThere were %g edges and %g hinges found.  Data follows for each.\n" % (len(array_sides), np.sum(array_hinge_valid)))
 for iCounter, edge in enumerate(array_sides):
     print(" Edge #%g" % int(iCounter+1))
-    print("   Start (Latitude, Longitude):", rim_data[edge[0],0], rim_data[edge[0],1])
-    print("   End   (Latitude, Longitude):", rim_data[edge[1],0], rim_data[edge[1],1])
-    print("   Length (km)                :", array_length[iCounter])
-    print("   Bearing (degrees, N=0°, CW):", array_angles[iCounter])
+    print("   Start (Latitude, Longitude)       :", rim_data[edge[0],0], rim_data[edge[0],1])
+    print("   End   (Latitude, Longitude)       :", rim_data[edge[1],0], rim_data[edge[1],1])
+    print("   Length (km)                       :", round(array_length[iCounter],3))
+    print("   Bearing (degrees, N=0°, CW, w/ SD):", round(array_angles[iCounter],3), round(np.std(bearing[edge[0]:edge[1]], ddof=1),3))
+print("")
 for iCounter, hinge in enumerate(array_hinge_valid):
     if hinge == 1:
         print(" Candidate Hinge #%g" % int(iCounter+1))
-        print("   Length (km)               :", dist_INT[array_sides[iCounter+1][0]]-dist_INT[array_sides[iCounter][1]])
-        print("   Angle  (degrees, N=0°, CW):", array_angles[iCounter+1]-array_angles[iCounter])
+        print("   Length (km)                       :", round(dist_INT[array_sides[iCounter+1][0]]-dist_INT[array_sides[iCounter][1]],3))
+        print("   Angle  (degrees, N=0°, CW)        :", round(array_angles[iCounter+1]-array_angles[iCounter],3))
     else:
         print(" Candidate Hinge #%g failed to meet tolerances." % int(iCounter+1))
+
+#Output the time to the user (do it now because the display, below, will not end
+# the code so the time will be however long the graph stays open.
+print("\nTime to analyze the crater: %f sec." % round((time.time()-timer_start),5))
+
 
 
 
