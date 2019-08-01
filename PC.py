@@ -310,14 +310,16 @@ if(dist_INT[array_sides[0][0]]+(dist_INT[len(dist_INT)-1]-dist_INT[array_sides[l
 print("\nThere were %g edges and %g hinges found.  Data follows for each.\n" % (len(array_sides), np.sum(array_hinge_valid)))
 for iCounter, edge in enumerate(array_sides):
     print(" Edge #%g" % int(iCounter+1))
-    print("   Start (Latitude, Longitude)       :", rim_data[edge[0],0], rim_data[edge[0],1])
-    print("   End   (Latitude, Longitude)       :", rim_data[edge[1],0], rim_data[edge[1],1])
+    print("   Start  (Latitude, Longitude)      :", rim_data[edge[0],0], rim_data[edge[0],1])
+    print("   End    (Latitude, Longitude)      :", rim_data[edge[1],0], rim_data[edge[1],1])
+    print("   Center (Latitude, Longitude)      :", round(np.mean(rim_data[array_sides[iCounter][0]:array_sides[iCounter][1],0]),3), round(np.mean(rim_data[array_sides[iCounter][0]:array_sides[iCounter][1],1]),3))
     print("   Length (km)                       :", round(array_length[iCounter],3))
     print("   Bearing (degrees, N=0°, CW, w/ SD):", round(array_angles[iCounter],3), round(np.std(bearing[edge[0]:edge[1]], ddof=1),3))
 print("")
 for iCounter, hinge in enumerate(array_hinge_valid):
     if hinge == 1:
         print(" Candidate Hinge #%g" % int(iCounter+1))
+        print("   Center (Latitude, Longitude)      :", round((rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][0]),3), round((rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][1]),3))
         print("   Length (km)                       :", round(dist_INT[array_sides[iCounter+1][0]]-dist_INT[array_sides[iCounter][1]],3))
         print("   Angle  (degrees, N=0°, CW)        :", round(array_angles[iCounter+1]-array_angles[iCounter],3))
     else:
