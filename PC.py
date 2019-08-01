@@ -131,7 +131,7 @@ dist[:]     = 2*np.arctan2(np.sqrt(dist[:]),np.sqrt(1.0 + np.negative(dist[:])))
 smoothing_distance = float(args.tolerance_distance_min_forside) / np.mean(dist)
 smoothing_distance = int(smoothing_distance/float(args.smoothing_length))
 smoothing_distance = smoothing_distance+1 if (smoothing_distance % 2 == 0) else smoothing_distance
-print("Smoothing distance in units of rim points:", smoothing_distance)
+#print("Smoothing distance in units of rim points:", smoothing_distance)
 
 #Perform the smoothing.
 rim_data_backup = rim_data.copy()
@@ -378,10 +378,11 @@ for iCounter, hinge in enumerate(array_hinge_valid):
     else:
         print(" Candidate Hinge #%g failed to meet tolerances." % int(iCounter+1))
 
+
+
 #Output the time to the user (do it now because the display, below, will not end
 # the code so the time will be however long the graph stays open.
 print("\nTime to analyze the crater: %f sec." % round((time.time()-timer_start),5))
-
 
 
 
