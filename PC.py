@@ -15,7 +15,10 @@ Modification Log:
   31-Jul-2019: -Added movement of edges forward to search for better match, then
                 rock back a bit to check for an extended start/end point.
                -Modified user output, including working timer.
-
+               -Added smoothing factor based on testing Fekojoo crater (Ceres).
+               -Fixed several bugs that caused crashes or infinite loops when
+                dealing with edges going up to the end of the rim trace and
+                angles between the first and last edge.
 """
 
 
@@ -27,6 +30,7 @@ Modification Log:
 import argparse                     #allows parsing of input options
 import numpy as np                  #lots of maths
 import scipy as sp                  #lots of special maths
+from scipy.signal import savgol_filter #specific maths!
 import math                         #other lots of maths
 import time                         #timing for debugging
 import sys                          #for setting NumPY output for debugging
@@ -40,12 +44,13 @@ np.set_printoptions(threshold=sys.maxsize) #for debugging purposes
 parser = argparse.ArgumentParser(description='Identify polygonal crater rims.')
 
 #Various runtime options.
-parser.add_argument('--input',          dest='inputFile',       action='store', default='', help='Name of the CSV file with a single crater rim trace with latitude,longitude in decimal degrees, one per line.')
-parser.add_argument('--body_radius',    dest='d_planet_radius', action='store', default='1',help='Radius of the planetary body on which the crater is placed, in kilometers.')
+parser.add_argument('--input',                              dest='inputFile',                       action='store', default='',     help='Name of the CSV file with a single crater rim trace with latitude,longitude in decimal degrees, one per line.')
+parser.add_argument('--body_radius',                        dest='d_planet_radius',                 action='store', default='1',    help='Radius of the planetary body on which the crater is placed, in kilometers.')
 parser.add_argument('--tolerance_distance_min_forside',     dest='tolerance_distance_min_forside',  action='store', default='5',    help='The minimum length of a rim segment to be approximately straight to be considered an edge (in km).')
 parser.add_argument('--tolerance_distance_max_forhinge',    dest='tolerance_distance_max_forhinge', action='store', default='5',    help='The maximum length of a rim segment to be curved enough to be considered a hinge/joint between edges (in km).')
 parser.add_argument('--tolerance_angle_max_forside',        dest='tolerance_angle_max_forside',     action='store', default='10',   help='The maximum angle that a rim segment can vary for it to be considered a straight side (in degrees).')
 parser.add_argument('--tolerance_angle_min_forhinge',       dest='tolerance_angle_min_forhinge',    action='store', default='20',   help='The minimum standard deviation of the bearing angle a rim segment must vary within the given length for it to be considered a hinge/joint between edges (in degrees).')
+parser.add_argument('--smoothing_length',                   dest='smoothing_length',                action='store', default='1',    help='The rim trace will be smoothed using a Savitzky-Golay filter of a length in rim points where that length is divided by THIS value (e.g., 1 means the smoothing length is the average number of points corresponding to the minimum length of an edge).')
 
 #Parse all the arguments so they can be stored
 args=parser.parse_args()
@@ -110,6 +115,38 @@ dist[0:-1]  = np.power((np.sin((rim_data[1:,1]-rim_data[0:-1,1])*math.pi/180/2))
 dist[-1]    = np.power((np.sin((rim_data[0 ,1]-rim_data[-1  ,1])*math.pi/180/2)),2) + np.cos(rim_data[0 ,1]*math.pi/180)*np.cos(rim_data[-1  ,1]*math.pi/180)*np.power(np.sin((rim_data[0  ,0]-rim_data[-1 ,0])*math.pi/180/2),2)
 dist[:]     = 2*np.arctan2(np.sqrt(dist[:]),np.sqrt(1.0 + np.negative(dist[:]))) * float(args.d_planet_radius)
 
+
+#Now, to be fair, I lied.  About all the above stuff.  What we really want to do
+# is use a *smoothed* rim trace because, otherwise, bumps and wiggles will throw
+# things off and result in really short sides, which is something the eye does
+# not do.  We needed to calculate things up to here in order to get the
+# smoothing length, which is based on the average spacing relative to the
+# tolerance_distance_min_forside length scale.
+
+#Determine the smoothing distance.  This is based on what worked.  The first
+# line calculates the average number of rim points per minimum length of an edge
+# and what we want is the second line, which is for an edge to be some number of
+# points, at a minimum.  But, for the Savitzky-Golay filter, we must have an odd
+# number of points to smooth over, hence the third line.
+smoothing_distance = float(args.tolerance_distance_min_forside) / np.mean(dist)
+smoothing_distance = int(smoothing_distance/float(args.smoothing_length))
+smoothing_distance = smoothing_distance+1 if (smoothing_distance % 2 == 0) else smoothing_distance
+print("Smoothing distance in units of rim points:", smoothing_distance)
+
+#Perform the smoothing.
+rim_data_backup = rim_data.copy()
+rim_data_lon = sp.signal.savgol_filter(rim_data[:,0],smoothing_distance,3, mode='wrap')
+rim_data_lat = sp.signal.savgol_filter(rim_data[:,1],smoothing_distance,3, mode='wrap')
+rim_data[:,0] = rim_data_lon.copy()
+rim_data[:,1] = rim_data_lat.copy()
+
+
+#Now, redo the distance and then continue on.
+dist[0:-1]  = np.power((np.sin((rim_data[1:,1]-rim_data[0:-1,1])*math.pi/180/2)),2) + np.cos(rim_data[1:,1]*math.pi/180)*np.cos(rim_data[0:-1,1]*math.pi/180)*np.power(np.sin((rim_data[1:,0]-rim_data[0:-1,0])*math.pi/180/2),2)
+dist[-1]    = np.power((np.sin((rim_data[0 ,1]-rim_data[-1  ,1])*math.pi/180/2)),2) + np.cos(rim_data[0 ,1]*math.pi/180)*np.cos(rim_data[-1  ,1]*math.pi/180)*np.power(np.sin((rim_data[0  ,0]-rim_data[-1 ,0])*math.pi/180/2),2)
+dist[:]     = 2*np.arctan2(np.sqrt(dist[:]),np.sqrt(1.0 + np.negative(dist[:]))) * float(args.d_planet_radius)
+
+
 #Integrate the distances to put the sum at the NEXT point, so point index 1 has
 # the distance between point index 0 and 1.
 #TO DO: Python-ize.
@@ -160,51 +197,51 @@ counter_point_start = 0
 # instead of for() loop because Python does not allow you to dynamically alter
 # the iterating variable within the loop itself.
 while True:
-    
+
     #For the initial search from this starting point, we need the index of the
     # first possible end point for this edge, which is based on distance.
     counter_point_end = round(np.searchsorted(dist_INT, dist_INT[counter_point_start]+float(args.tolerance_distance_min_forside)))
-    
+
     #NumPY will NOT return an error if the search is before or after the list,
     # so we need to check for that.
     if (counter_point_end > 0) and (counter_point_end < len(dist_INT)):
-        
+
         #We have a set of points that could be an edge because it's long enough.
         # The first step in testing it is to calculate the standard deviation.
         # In this calculation, we want the end points to be inclusive, so we
         # need to slice up to +1.  We also want the sample standard deviation,
         # not the population standard deviation, so need to use ddof=1.
         standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
-        
+
         #Now, test that standard deviation.
         if standardDeviation <= float(args.tolerance_angle_max_forside):
-            
+
             #We successfully found points that can be considered a side, so now
             # want to look further along the rim to determine if any more
             # contiguous points could be considered part of this side, too.
             while True:
                 counter_point_end += 1
                 standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
-                if standardDeviation > float(args.tolerance_angle_max_forside):
+                if (standardDeviation > float(args.tolerance_angle_max_forside)) or (counter_point_end >= len(rim_data)-2):
                     counter_point_end -= 1  #subtract 1 because we went over
                     break
-            
+
             #We have our maximum-length rim section that qualifies as an edge,
             # so now re-calculate the standard deviation of the bearing of the
             # points within it.
             reference_standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
-            
+
             #See if shifting the edge back-and-forth at all allows it to be
             # extended or shifted to better represent an edge.
             shift_start = +1
-            shift_end = +1
+            shift_end   = +1 if counter_point_end < len(rim_data)-2 else 0
             reference_length = dist_INT[counter_point_end+1]-dist_INT[counter_point_start]
             while True:
-                
+
                 #Start off by shifting 1 point along the rim.
                 counter_point_start_test = counter_point_start + shift_start
                 counter_point_end_test   = counter_point_end   + shift_end
-                
+
                 #Ensure the length is still long enough for our threshold; if
                 # not, increase the end point until it is.
                 if dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test] < float(args.tolerance_distance_min_forside):
@@ -215,7 +252,7 @@ while True:
                             break   #break if it's long enough
                         if counter_point_end + shift_end >= len(rim_data):
                             break   #break if we go over the edge -- TO DO: Make wrap-around aware.
-            
+
                 #Now check to see if the standard deviation of the bearings both
                 # meets our requirements for a maximum to still be a side, and
                 # is better than the original side we found.  If it is, then set
@@ -224,25 +261,25 @@ while True:
                 standardDeviation = np.std(bearing[counter_point_start_test:counter_point_end_test+1], ddof=1)
                 if (standardDeviation <= float(args.tolerance_angle_max_forside)) and (standardDeviation < reference_standardDeviation):
                     shift_start += 1
-                    shift_end   += 1
+                    shift_end   += 1 if counter_point_end + shift_end < len(rim_data)-2 else 0
                     reference_length = dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test]
                     reference_standardDeviation = np.std(bearing[counter_point_start_test:counter_point_end_test+1], ddof=1)
                 else:
                     shift_start -= 1
                     shift_end   -= 1
                     break
-            
+
             #Set the start/end points to the results from above.
             counter_point_start += shift_start
             counter_point_end   += shift_end
-            
+
             #Determine if we can correct back at all, possibly extending either
             # start or end by one point.  We still need to check angular varia-
             # tion, but since we are EXTENDING the sides, we don't need to check
             # for length.
             flag_start_decrease = 0
             flag_stop_increase  = 0
-            if counter_point_start >= 1:    #TO DO: Make wrap-around-aware
+            if (counter_point_start >= 1) and (counter_point_start > (array_sides[len(array_sides)-1][1] if len(array_sides)>0 else 0)):    #TO DO: Make wrap-around-aware
                 standardDeviation = np.std(bearing[counter_point_start-1:counter_point_end+1], ddof=1)
                 if standardDeviation <= float(args.tolerance_angle_max_forside):
                     flag_start_decrease -= 1
@@ -254,7 +291,7 @@ while True:
                 counter_point_end   += flag_stop_increase
             reference_standardDeviation = np.std(bearing[counter_point_start:counter_point_end+1], ddof=1)
             reference_length = dist_INT[counter_point_end+1]-dist_INT[counter_point_start]
-            
+
             #Now that we have the for-realz edge start/end indices, store them.
             array_sides.append([counter_point_start,counter_point_end+1])
 
@@ -263,16 +300,16 @@ while True:
 
             #Since we have a real edge, store the length along the rim for it.
             array_length.append(dist_INT[counter_point_end+1]-dist_INT[counter_point_start])
-            
+
             #Set up to testfor another edge at the end of this one.
             counter_point_start = counter_point_end+1
-        
+
         #The standard deviation of the minimum-length side was too large, so it
         # does not count as an edge and we have to move on, starting with the
         # next point as the possible start location.
         else:
             counter_point_start += 1
-    
+
     #The distance measure for an edge failed to find something within the list,
     # so we should move on.
     #TO DO: This is where wrap-around code needs to be developed.
@@ -284,17 +321,24 @@ while True:
         break
 
 
+
 #Now determine if the possible hinges meet the criteria set by the command-line
 # arguments for maximum distance and minimum angle.  Special case for the last
 # candidate hinge to support wrap-around.
 array_hinge_valid = [0]*(len(array_angles)) #holds a boolean array
-for counter_hinge in range(0,len(array_angles)-1):
-    if(dist_INT[array_sides[counter_hinge+1][0]]-dist_INT[array_sides[counter_hinge][1]] < float(args.tolerance_distance_max_forhinge)):
-        if(array_angles[counter_hinge+1]-array_angles[counter_hinge] > float(args.tolerance_angle_min_forhinge)):
-            array_hinge_valid[counter_hinge] = 1
-if(dist_INT[array_sides[0][0]]+(dist_INT[len(dist_INT)-1]-dist_INT[array_sides[len(array_angles)-1][1]]) < float(args.tolerance_distance_max_forhinge)):
-    if((array_angles[0]+360)-array_angles[len(array_angles)-1] > float(args.tolerance_angle_min_forhinge)):
-        array_hinge_valid[counter_hinge] = 1
+if len(array_angles) > 0:
+
+    #All angles but the last edge to first edge.
+    for counter_hinge in range(0,len(array_angles)-1):
+        if(dist_INT[array_sides[counter_hinge+1][0]]-dist_INT[array_sides[counter_hinge][1]] < float(args.tolerance_distance_max_forhinge)):
+            if(array_angles[counter_hinge+1]-array_angles[counter_hinge] > float(args.tolerance_angle_min_forhinge)):
+                array_hinge_valid[counter_hinge] = 1
+
+    #Wrap-around for the last angle.
+    if(dist_INT[array_sides[0][0]]+(dist_INT[len(dist_INT)-1]-dist_INT[array_sides[len(array_angles)-1][1]]) < float(args.tolerance_distance_max_forhinge)):
+        if((array_angles[0]+360)-array_angles[len(array_angles)-1] > float(args.tolerance_angle_min_forhinge)):
+            array_hinge_valid[len(array_hinge_valid)-1] = 1
+
 
 
 ##Debug purposes.
@@ -310,18 +354,24 @@ if(dist_INT[array_sides[0][0]]+(dist_INT[len(dist_INT)-1]-dist_INT[array_sides[l
 print("\nThere were %g edges and %g hinges found.  Data follows for each.\n" % (len(array_sides), np.sum(array_hinge_valid)))
 for iCounter, edge in enumerate(array_sides):
     print(" Edge #%g" % int(iCounter+1))
-    print("   Start  (Latitude, Longitude)      :", rim_data[edge[0],0], rim_data[edge[0],1])
-    print("   End    (Latitude, Longitude)      :", rim_data[edge[1],0], rim_data[edge[1],1])
+    print("   Start  (Latitude, Longitude)      :", round(rim_data[edge[0],0],3), round(rim_data[edge[0],1],3))
+    print("   End    (Latitude, Longitude)      :", round(rim_data[edge[1],0],3), round(rim_data[edge[1],1],3))
     print("   Center (Latitude, Longitude)      :", round(np.mean(rim_data[array_sides[iCounter][0]:array_sides[iCounter][1],0]),3), round(np.mean(rim_data[array_sides[iCounter][0]:array_sides[iCounter][1],1]),3))
     print("   Length (km)                       :", round(array_length[iCounter],3))
     print("   Bearing (degrees, N=0°, CW, w/ SD):", round(array_angles[iCounter],3), round(np.std(bearing[edge[0]:edge[1]], ddof=1),3))
 print("")
 for iCounter, hinge in enumerate(array_hinge_valid):
     if hinge == 1:
-        print(" Candidate Hinge #%g" % int(iCounter+1))
-        print("   Center (Latitude, Longitude)      :", round((rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][0]),3), round((rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][1]),3))
-        print("   Length (km)                       :", round(dist_INT[array_sides[iCounter+1][0]]-dist_INT[array_sides[iCounter][1]],3))
-        print("   Angle  (degrees, N=0°, CW)        :", round(array_angles[iCounter+1]-array_angles[iCounter],3))
+        if iCounter < len(array_hinge_valid)-1:
+            print(" Candidate Hinge #%g" % int(iCounter+1))
+            print("   Center (Latitude, Longitude)      :", round((rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][0]),3), round((rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][1]),3))
+            print("   Length (km)                       :", round(dist_INT[array_sides[iCounter+1][0]]-dist_INT[array_sides[iCounter][1]],3))
+            print("   Angle  (degrees, N=0°, CW)        :", round(array_angles[iCounter+1]-array_angles[iCounter],3))
+        else:
+            print(" Candidate Hinge #%g" % int(iCounter+1))
+            print("   Center (Latitude, Longitude)      :", round((rim_data[int(round((array_sides[0][0] + array_sides[iCounter][1]) / 2.))][0]),3), round((rim_data[int(round((array_sides[0][0] + array_sides[iCounter][1]) / 2.))][1]),3))
+            print("   Length (km)                       :", round(dist_INT[array_sides[0][0]]+(dist_INT[len(dist_INT)-1]-dist_INT[array_sides[iCounter][1]]),3))
+            print("   Angle  (degrees, N=0°, CW)        :", round(array_angles[0]+360-array_angles[iCounter],3))
     else:
         print(" Candidate Hinge #%g failed to meet tolerances." % int(iCounter+1))
 
@@ -341,8 +391,11 @@ print("\nTime to analyze the crater: %f sec." % round((time.time()-timer_start),
 PolygonalCraterWindow = mpl.figure(1, figsize=(10,10))
 
 
+#Plot the smoothed crater rim.
+mpl.plot(rim_data[:,0], rim_data[:,1], color='#AAAAAA', linewidth=7, label='Smoothed Rim Trace')
+
 #Plot the crater rim.
-mpl.plot(rim_data[:,0], rim_data[:,1], color='#666666', linewidth=3, label='Rim Trace')
+mpl.plot(rim_data_backup[:,0], rim_data_backup[:,1], color='#666666', linewidth=3, label='Rim Trace')
 
 
 #Append a line for every valid edge.
@@ -379,8 +432,12 @@ array_hinges_x_position = []
 array_hinges_y_position = []
 for iCounter, validHinge in enumerate(array_hinge_valid):
     if validHinge == 1:
-        array_hinges_x_position.append([(rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][0])])
-        array_hinges_y_position.append([(rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][1])])
+        if iCounter < len(array_hinge_valid)-1:
+            array_hinges_x_position.append([(rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][0])])
+            array_hinges_y_position.append([(rim_data[int(round((array_sides[iCounter+1][0] + array_sides[iCounter][1]) / 2.))][1])])
+        else:
+            array_hinges_x_position.append([(rim_data[int(array_sides[0][0])][0] + rim_data[int(array_sides[iCounter][1])][0]) / 2.])
+            array_hinges_y_position.append([(rim_data[int(array_sides[0][0])][1] + rim_data[int(array_sides[iCounter][1])][1]) / 2.])
 mpl.scatter(array_hinges_x_position, array_hinges_y_position, s=250, facecolors='none', edgecolors='#0000FF', label='Hinges')
 
 
@@ -395,6 +452,9 @@ mpl.ylabel('Latitude (degrees)')
 
 #Append graph title.
 mpl.title('Crater Rim with Any Polygonal Edges and Angles')
+
+#Make axes equal / square in degrees space.
+mpl.axis('equal')
 
 
 ##Finally, make the plot visible.
