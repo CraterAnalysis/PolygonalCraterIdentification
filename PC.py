@@ -248,6 +248,9 @@ while True:
                     while True:
                         shift_end += 1
                         counter_point_end_test = counter_point_end + shift_end
+                        if counter_point_end_test >= len(rim_data)-1:
+                            shift_end -= 1
+                            break   #break if we've gone over the end of the rim
                         if dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test] >= float(args.tolerance_distance_min_forside):
                             break   #break if it's long enough
                         if counter_point_end + shift_end >= len(rim_data):
@@ -260,15 +263,15 @@ while True:
                 # then decrease the shift back to the previous loop, and break.
                 standardDeviation = np.std(bearing[counter_point_start_test:counter_point_end_test+1], ddof=1)
                 if (standardDeviation <= float(args.tolerance_angle_max_forside)) and (standardDeviation < reference_standardDeviation):
-                    shift_start += 1
-                    shift_end   += 1 if counter_point_end + shift_end < len(rim_data)-2 else 0
                     reference_length = dist_INT[counter_point_end_test+1]-dist_INT[counter_point_start_test]
                     reference_standardDeviation = np.std(bearing[counter_point_start_test:counter_point_end_test+1], ddof=1)
+                    shift_start += 1
+                    if counter_point_end_test + shift_end < len(dist_INT)-2: shift_end += 1
                 else:
                     shift_start -= 1
                     shift_end   -= 1
                     break
-
+            
             #Set the start/end points to the results from above.
             counter_point_start += shift_start
             counter_point_end   += shift_end
@@ -439,6 +442,12 @@ for iCounter, validHinge in enumerate(array_hinge_valid):
             array_hinges_x_position.append([(rim_data[int(array_sides[0][0])][0] + rim_data[int(array_sides[iCounter][1])][0]) / 2.])
             array_hinges_y_position.append([(rim_data[int(array_sides[0][0])][1] + rim_data[int(array_sides[iCounter][1])][1]) / 2.])
 mpl.scatter(array_hinges_x_position, array_hinges_y_position, s=250, facecolors='none', edgecolors='#0000FF', label='Hinges')
+
+
+#Hack to add some information:
+mpl.scatter([],[], label=('distance: ' + args.tolerance_distance_min_forside))
+mpl.scatter([],[], label=('angle   : ' + args.tolerance_angle_max_forside))
+mpl.scatter([],[], label=('scaling : ' + args.smoothing_length))
 
 
 ##General graph appendages.
