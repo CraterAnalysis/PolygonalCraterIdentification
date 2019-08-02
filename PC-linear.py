@@ -29,12 +29,8 @@ Modification Log:
 #Import the libraries needed for this program.
 import argparse                     #allows parsing of input options
 import numpy as np                  #lots of maths
-import scipy as sp                  #lots of special maths
-from scipy.signal import savgol_filter #specific maths!
 import math                         #other lots of maths
-import time                         #timing for debugging
 import sys                          #for setting NumPY output for debugging
-import matplotlib.pyplot as mpl     #for display purposes
 import matplotlib.pyplot as plt     #for display purposes
 from numpy import pi
 import scipy.optimize
@@ -63,26 +59,18 @@ parser = argparse.ArgumentParser(description='Identify polygonal crater rims.')
 #Various runtime options.
 parser.add_argument('--input',                              dest='inputFile',                       action='store', default='',     help='Name of the CSV file with a single crater rim trace with latitude,longitude in decimal degrees, one per line.')
 parser.add_argument('--body_radius',                        dest='d_planet_radius',                 action='store', default='1',    help='Radius of the planetary body on which the crater is placed, in kilometers.')
-#parser.add_argument('--tolerance_distance_min_forside',     dest='tolerance_distance_min_forside',  action='store', default='5',    help='The minimum length of a rim segment to be approximately straight to be considered an edge (in km).')
-#parser.add_argument('--tolerance_distance_max_forhinge',    dest='tolerance_distance_max_forhinge', action='store', default='5',    help='The maximum length of a rim segment to be curved enough to be considered a hinge/joint between edges (in km).')
-#parser.add_argument('--tolerance_angle_max_forside',        dest='tolerance_angle_max_forside',     action='store', default='10',   help='The maximum angle that a rim segment can vary for it to be considered a straight side (in degrees).')
-#parser.add_argument('--tolerance_angle_min_forhinge',       dest='tolerance_angle_min_forhinge',    action='store', default='20',   help='The minimum standard deviation of the bearing angle a rim segment must vary within the given length for it to be considered a hinge/joint between edges (in degrees).')
-#parser.add_argument('--smoothing_length',                   dest='smoothing_length',                action='store', default='1',    help='The rim trace will be smoothed using a Savitzky-Golay filter of a length in rim points where that length is divided by THIS value (e.g., 1 means the smoothing length is the average number of points corresponding to the minimum length of an edge).')
+parser.add_argument('--num_test_rounds', type=int, default=40, 
+    help='Validation rounds for model checking (longer is better but more computationally expensive).')
+parser.add_argument('--num_test_patches', type=int, default=10,
+    help="""In validation, data will be split into this many angular zones. 
+    Randomly, some will be left out in a bootstrap testing. This helps test coherently missing data.
+    Large num_test_patches correspond to smaller angles, small num_test_patches leave out large
+    fractions of the crater rim.
+    """)
+parser.add_argument('--max_num_change_points', type=int, default=12, 
+    help='Maximum number of edges to start with (higher is slower).')
 
-#Parse all the arguments so they can be stored
 args=parser.parse_args()
-
-
-
-
-##----------------------------------------------------------------------------##
-
-#Store the time to output it at the end.
-timer_start = time.time()
-
-
-
-##-------------- SET UP THE DATA INTO A LOCAL COORDINATE SYSTEM --------------##
 
 
 #Read the crater rim data.
@@ -137,12 +125,17 @@ plt.subplot(1, 2, 2)
 plt.plot(phi / np.pi * 180, rho, 'x ', ms=2)
 plt.xlabel('angle')
 plt.ylabel('distance')
-plt.savefig('polar.pdf', bbox_inches='tight')
+plt.savefig('polar-data.pdf', bbox_inches='tight')
 plt.close()
 
-chi2_best = 1e300
-
 def piecewise_model(phi, phi_cp, rho_cp):
+    """
+    Model of a piece-wise linear radius as a function of angle phi
+    rho_cp: change point radii
+    phi_cp: change point angles
+    
+    returns prediction at angles phi
+    """
     idx = np.argsort(phi_cp)
     phi_cp = phi_cp[idx]
     rho_cp = rho_cp[idx]
@@ -162,8 +155,10 @@ def piecewise_model(phi, phi_cp, rho_cp):
     return rho_predict
 
 @mem.cache
-def minfunc(params, plot=False):
-    #print('params:', params)
+def minfunc(params):
+    """
+    Compute chi2 against loaded data (phi, rho), given change points
+    """
     num_change_points = len(params) // 2
     phi_cp = np.fmod(np.asarray(params[:num_change_points]) + 3*pi, 2*pi) - pi
     if (phi_cp < -pi).any() or (phi_cp > pi).any():
@@ -173,33 +168,21 @@ def minfunc(params, plot=False):
     
     # compute deviance
     chi2 = np.sum((rho_predict - rho)**2)
-    """
-    if plot:
-        global chi2_best
-        if chi2 < chi2_best:
-            if chi2 < chi2_best - 1.0 and plot:
-                plt.plot(phi_cp / np.pi * 180, rho_cp, 'x ', color='k')
-                plt.plot(phi / np.pi * 180, rho, 'x ', ms=2)
-                plt.plot(phi / np.pi * 180, rho_predict, '.')
-                plt.xlabel('angle')
-                plt.ylabel('distance')
-                plt.savefig('polar-minfunc.pdf', bbox_inches='tight')
-                plt.close()
-                chi2_best = chi2
-            elif not plot:
-                chi2_best = chi2
-            #print("chi2: %.1f" % chi2, params)
-    """
     return chi2
 
 @mem.cache
 def minimize(x0):
+    """ find best change points from starting parameters x0 """
     return scipy.optimize.minimize(minfunc, x0=x0)
 
 
 @mem.cache
 def minimize_otherdata(x0, rho, phi):
-    def minfunc_otherdata(params, plot=False):
+    """ find best change points from starting parameters x0
+    Here, we are optimizing only against data rho, phi passed as args
+    (not the global ones).
+    """
+    def minfunc_otherdata(params):
         num_change_points = len(params) // 2
         phi_cp = np.fmod(np.asarray(params[:num_change_points]) + 3*pi, 2*pi) - pi
         if (phi_cp < -pi).any() or (phi_cp > pi).any():
@@ -249,6 +232,9 @@ def bootstrap_validate(params, nrounds=20, npatches=20):
     """
     num_change_points = len(params) // 2
     bin = ((phi + pi) * npatches / (2 * pi)).astype(int)
+    bin[bin == npatches] = npatches - 1
+    assert (bin >= 0).all(), (bin, npatches)
+    assert (bin < npatches).all(), (bin, npatches)
     chi2s = []
     variances = []
     for i in range(nrounds):
@@ -265,50 +251,66 @@ def bootstrap_validate(params, nrounds=20, npatches=20):
             return 1e200
         rho_cp = np.asarray(results.x[num_change_points:])
         rho_predict = piecewise_model(phi_test, phi_cp, rho_cp)
-        chi2 = ((rho_predict - rho_test)**2).sum()
+        chi2 = ((rho_predict - rho_test)**2).mean()
         chi2s.append(chi2)
         variances.append(np.var(rho_predict))
     
     return np.mean(chi2s), np.mean(variances)
 
+# Start of program:
+# We first try to find a decent fit with a large number of change points (cp)
+# 
 
-
-num_change_points = 12
-sequence = []
-np.random.seed(3)
+num_change_points = args.max_num_change_points
 
 best_chi2 = 1e300
 best_params = None
 
 for i in range(6):
-    initial_cp_phi = np.linspace(-pi, pi, num_change_points+1)[:-1] + i / 20. * 2 * pi / num_change_points
+    # we take some initial guess by dividing evenly. 
+    # Where the beginning is, is ambiguous, so we slide it, and refit 
+    initial_cp_phi = np.linspace(-pi, pi, num_change_points+1)[:-1] + i / 6. * 2 * pi / num_change_points
     initial_cp_rho = np.interp(initial_cp_phi, phi, rho)
     params = list(initial_cp_phi) + list(initial_cp_rho)
     minfunc(params)
     results = minimize(x0=params) #, method='Nelder-Mead')
-    chi2_best = 1e300
-    chi2 = minfunc(results.x, plot=False)
+    chi2 = minfunc(results.x)
     print("best fit:", chi2)
     if chi2 < best_chi2:
         best_chi2 = chi2
         best_params = results.x
 
-# go through each cp and try to remove it
-
+# the best fit is kept as our initial (complex) model
 chi2, params = best_chi2, best_params
+
+# now we simplify the model.
+
+# go through each cp and try to remove it
+sequence = []
 
 while num_change_points > 2:
     best_chi2 = 1e300
     best_params = None
     
+    # before we alter the model, we validate its prediction quality:
+    # we compute bias and variance here
+    
     # do a k-fold validation and compute the mean error
     # the choice of K here can influence the result though, because
     # it determines the prediction angle
     #test_mean, test_variance = k_fold_validate(K=num_change_points * 2, params=params)
-    test_mean, test_variance = bootstrap_validate(params=params, npatches=40, nrounds=40)
+    
+    # do a bootstrap validation leaving out some of the data and check the prediction
+    test_bias, test_variance = bootstrap_validate(params=params, 
+        npatches=args.num_test_patches, 
+        nrounds=args.num_test_rounds)
+    
+    # now we find out which CP is easiest to remove:
+    # this is similar to Bayesian blocks
+    # The recursive, optimized model simplification gives some (mild) guarantees
+    # that we likely are at the global optimum of the simpler space.
     
     removal_sensitivity = []
-
     for i in range(num_change_points):
         print("removing point %d/%d" % (i, num_change_points))
         initial_cp_phi = np.fmod(np.asarray(params[:num_change_points]) + 3*pi, 2*pi) - pi
@@ -319,75 +321,74 @@ while num_change_points > 2:
         initial_cp_phi = initial_cp_phi[mask]
         initial_cp_rho = initial_cp_rho[mask]
 
-
         start_params = list(initial_cp_phi) + list(initial_cp_rho)
         assert len(start_params) == len(params) - 2, (len(start_params), len(params), len(mask), mask.sum())
         result_chi2 = minfunc(start_params)
-        #removal_sensitivity.append(result_chi2)
         results = minimize(x0=start_params) #, method='Nelder-Mead')
-        chi2_best = 1e300
-        result_chi2 = minfunc(results.x, plot=False)
+        result_chi2 = minfunc(results.x)
         removal_sensitivity.append(result_chi2)
         if result_chi2 < best_chi2:
             best_chi2 = result_chi2
             best_params = results.x
     
-    sequence.append([num_change_points, chi2, params, test_mean, test_variance, np.mean(removal_sensitivity), np.std(removal_sensitivity)])
+    sequence.append([num_change_points, chi2, params, test_bias, test_variance, np.mean(removal_sensitivity), np.std(removal_sensitivity)])
+    
+    # chose the best simpler model and reduce the number of cps:
     chi2, params = best_chi2, best_params
     num_change_points = num_change_points - 1
     assert len(params) == 2 * num_change_points, (params, num_change_points)
 
-plt.subplot(1, 2, 1)
-plt.plot(rim_lon_temp, rim_lat_temp, 'x ', ms=2)
-plt.xlabel('Longitude')
-plt.ylabel('Latitude')
 
-#f_sigma = 0.009
+# time to visualise!
 
-plt.subplot(1, 2, 2)
-#aics = []
-plt.plot(phi / np.pi * 180, rho, 'x ', ms=2)
 
+plt.figure(figsize=(12, 6))
+ax1 = plt.subplot(1, 2, 1)
+# plot data in long-lat space
+ax1.plot(rim_lon_temp, rim_lat_temp, 'x ', ms=2)
+ax1.set_xlabel('Longitude')
+ax1.set_ylabel('Latitude')
+
+ax2 = plt.subplot(1, 2, 2)
+# plot data in polar coords
+ax2.plot(phi / np.pi * 180, rho, 'x ', ms=2)
+ax2.set_xlabel('angle')
+ax2.set_ylabel('distance')
+
+# plot all our models:
 for num_change_points, chi2, params, _, _, _, _ in sequence:
     phi_cp = np.fmod(np.asarray(params[:num_change_points]) + 3*pi, 2*pi) - pi
     rho_cp = np.asarray(params[num_change_points:])
     rho_predict = piecewise_model(phi, phi_cp, rho_cp)
-    f_sigma = (((rho_predict - rho) / rho_predict)**2).mean()**0.5
     
-    #aic = chi2 / ((f_sigma * rho_predict)**2).sum() + 2 * len(params)
-    #aics.append(aic)
     print('%2d changepoints: chi2=%.1f' % (num_change_points, chi2))
-    plt.subplot(1, 2, 2)
-    plt.plot(phi / np.pi * 180, rho_predict, '-', lw=1, label='%d' % num_change_points)
-    plt.subplot(1, 2, 1)
+    ax2.plot(phi / np.pi * 180, rho_predict, '-', lw=1, label='%d' % num_change_points)
     lon_predict, lat_predict = pol2cart(rho_predict, phi)
     lon_predict, lat_predict = lon_predict + ctr_lon, lat_predict + ctr_lat
-    plt.plot(lon_predict, lat_predict, lw=1, label='%d' % num_change_points)
+    ax1.plot(lon_predict, lat_predict, lw=1, label='%d' % num_change_points)
 
-plt.subplot(1, 2, 1)
-plt.legend(loc='best')
-plt.subplot(1, 2, 2)
-plt.legend(loc='best')
-plt.xlabel('angle')
-plt.ylabel('distance')
+ax1.legend(loc='best')
+ax2.legend(loc='best')
 plt.savefig('polar.pdf', bbox_inches='tight')
 plt.close()
 
+# now lets see which model we should prefer:
+
+# unpack
 num_change_points, chi2, params, tavg, tstd, avg, std = zip(*sequence)
 
 # bias is chi2 of prediction (tavg)
 # variance is variance of prediction minus square of mean prediction (tstd).
 
 plt.plot(num_change_points, chi2, label='best fit chi2')
-plt.plot(num_change_points, avg, label='CP removal: chi2 average')
-plt.plot(num_change_points, std, label='CP removal: chi2 variance')
+#plt.plot(num_change_points, avg, label='CP removal: chi2 average')
+#plt.plot(num_change_points, std, label='CP removal: chi2 variance')
 plt.plot(num_change_points, np.asarray(tavg), label='bias')
 plt.plot(num_change_points, np.asarray(tstd), label='variance')
-plt.plot(num_change_points, (np.asarray(tstd) + np.asarray(tavg)), label='bias+variance')
+plt.plot(num_change_points, (np.asarray(tstd) + np.asarray(tavg)), label='bias+variance', ls='--')
 best_ncp = np.argmin(np.asarray(tstd) + np.asarray(tavg))
 plt.plot(num_change_points[best_ncp], (np.asarray(tstd) + np.asarray(tavg))[best_ncp], 'o')
 print('best number of change points: %d' % num_change_points[best_ncp])
-#plt.plot(num_change_points, np.asarray(aics) * 100, label='AIC')
 plt.yscale('log')
 plt.xlabel('number of change points')
 plt.ylabel('chi2')
