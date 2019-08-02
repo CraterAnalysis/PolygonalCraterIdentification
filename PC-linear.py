@@ -1,29 +1,13 @@
 """
-Created on Tue Jul 30 11:45:00 2019
 
 @author: Stuart J. Robbins
+@author: Johannes Buchner
 
-This code takes in a crater rim trace, in decimal degrees, and determines if any
-component of the trace meets set criteria for being considered an approximately
-straight edge, and if any component between two edges meets criteria to be
-considered a hinge.  It creates a graph showing the results and outputs the data
-to the command line.
+This code attempts to fit a crater rim with a sequence of 
+linear radius changes. The number of change points is optimized
+against bias and variance of the model.
 
-
-Modification Log:
-  30-Jul-2019: -Initial port from Igor.
-  31-Jul-2019: -Added movement of edges forward to search for better match, then
-                rock back a bit to check for an extended start/end point.
-               -Modified user output, including working timer.
-               -Added smoothing factor based on testing Fekojoo crater (Ceres).
-               -Fixed several bugs that caused crashes or infinite loops when
-                dealing with edges going up to the end of the rim trace and
-                angles between the first and last edge.
 """
-
-
-##TO DO:  SEE "TO DO" ITEMS THROUGHOUT THIS FILE.
-
 
 
 #Import the libraries needed for this program.
@@ -126,6 +110,7 @@ plt.plot(phi / np.pi * 180, rho, 'x ', ms=2)
 plt.xlabel('angle')
 plt.ylabel('distance')
 plt.savefig('polar-data.pdf', bbox_inches='tight')
+plt.savefig('polar-data.png', bbox_inches='tight')
 plt.close()
 
 def piecewise_model(phi, phi_cp, rho_cp):
@@ -370,6 +355,7 @@ for num_change_points, chi2, params, _, _, _, _ in sequence:
 ax1.legend(loc='best')
 ax2.legend(loc='best')
 plt.savefig('polar.pdf', bbox_inches='tight')
+plt.savefig('polar.png', bbox_inches='tight')
 plt.close()
 
 # now lets see which model we should prefer:
@@ -394,6 +380,7 @@ plt.xlabel('number of change points')
 plt.ylabel('chi2')
 plt.legend(loc='best')
 plt.savefig('polar-biasvar.pdf', bbox_inches='tight')
+plt.savefig('polar-biasvar.png', bbox_inches='tight')
 plt.close()
 
 
