@@ -33,6 +33,21 @@ def pol2cart(rho, phi):
     y = rho * np.sin(phi)
     return(x, y)
 
+def line(p1, p2):
+    A = (p1[1] - p2[1])
+    B = (p2[0] - p1[0])
+    C = (p1[0]*p2[1] - p2[0]*p1[1])
+    return A, B, -C
+
+def intersection(L1, L2):
+    D  = L1[0] * L2[1] - L1[1] * L2[0]
+    Dx = L1[2] * L2[1] - L1[1] * L2[2]
+    Dy = L1[0] * L2[2] - L1[2] * L2[0]
+    assert (D != 0).all()
+    x = Dx / D
+    y = Dy / D
+    return x,y
+
 #Set any code-wide parameters.
 np.set_printoptions(threshold=sys.maxsize) #for debugging purposes
 
@@ -45,7 +60,7 @@ parser.add_argument('--input',                              dest='inputFile',   
 parser.add_argument('--body_radius',                        dest='d_planet_radius',                 action='store', default='1',    help='Radius of the planetary body on which the crater is placed, in kilometers.')
 parser.add_argument('--num_test_rounds', type=int, default=40, 
     help='Validation rounds for model checking (longer is better but more computationally expensive).')
-parser.add_argument('--num_test_patches', type=int, default=10,
+parser.add_argument('--num_test_patches', type=int, default=100,
     help="""In validation, data will be split into this many angular zones. 
     Randomly, some will be left out in a bootstrap testing. This helps test coherently missing data.
     Large num_test_patches correspond to smaller angles, small num_test_patches leave out large
@@ -132,10 +147,48 @@ def piecewise_model(phi, phi_cp, rho_cp):
     #print(phi_cp, rho_cp)
     mask = np.logical_or(mask1, mask2)
     rho_predict = np.ones_like(phi) * np.nan
-    rho_predict[~mask] = np.interp(phi[~mask], phi_cp, rho_cp)
+    indices = list(range(len(phi_cp)))
+    for lefti, righti in zip(indices[:-1], indices[1:]):
+        # get linear coordinates
+        leftx, lefty = pol2cart(rho_cp[lefti], phi_cp[lefti])
+        rightx, righty = pol2cart(rho_cp[righti], phi_cp[righti])
+        
+        mask = np.logical_and(phi >= phi_cp[lefti], phi < phi_cp[righti])
+        # compute intersection of the line between those two points
+        # and the line of (0,0) going out with angle phi
+        L1 = line([leftx, lefty], [rightx, righty])
+        L2 = line([0.0, 0.0], pol2cart(1.0, phi[mask]))
+        intersect_pointx, intersect_pointy = intersection(L1, L2)
+        assert np.isfinite(intersect_pointx).all(), intersect_pointx
+        assert np.isfinite(intersect_pointy).all(), intersect_pointy
+        rho_predict[mask], _ = cart2pol(intersect_pointx, intersect_pointy)
     
-    rho_predict[mask1] = np.interp(phi[mask1] + 2*pi, [phi_cp[-1], phi_cp[0] + 2 * pi], [rho_cp[-1], rho_cp[0]])
-    rho_predict[mask2] = np.interp(phi[mask2], [phi_cp[-1], phi_cp[0] + 2 * pi], [rho_cp[-1], rho_cp[0]])
+    # handle the edge case
+    lefti, righti = -1, 0
+    # get linear coordinates
+    leftx, lefty = pol2cart(rho_cp[lefti], phi_cp[lefti])
+    rightx, righty = pol2cart(rho_cp[righti], phi_cp[righti])
+    
+    # shifted to lie near pi instead of between pi and -pi
+    phi2 = np.fmod(phi + 2*pi - phi_cp[lefti], 2 * pi)
+    phi2_cp = np.fmod(phi_cp + 2*pi - phi_cp[lefti], 2 * pi)
+    #mask = np.logical_and(phi2 >= phi2_cp[lefti], phi2 < phi2_cp[righti])
+    mask = phi2 <= phi2_cp[righti]
+    # compute intersection of the line between those two points
+    # and the line of (0,0) going out with angle phi
+    L1 = line([leftx, lefty], [rightx, righty])
+    L2 = line([0, 0], pol2cart(1.0, phi[mask]))
+    intersect_pointx, intersect_pointy = intersection(L1, L2)
+    assert np.isfinite(intersect_pointx).all(), intersect_pointx
+    assert np.isfinite(intersect_pointy).all(), intersect_pointy
+    rho_predict[mask], _ = cart2pol(intersect_pointx, intersect_pointy)
+    if not np.isfinite(rho_predict).all():
+        print('rho,phi,mask:\n')
+        print('\n'.join(['%.4f %.4f %.4f %d %d' % (r, p1, p2, m1, m2) for r, p1, p2, m1, m2 in \
+            zip(rho_predict, phi, phi2, phi >= phi_cp[lefti], phi2 < phi2_cp[righti])]))
+        print('cps:', phi_cp, phi2_cp)
+        print('result:', rho_predict[mask], mask.sum(), len(L2), len(intersect_pointx))
+    assert np.isfinite(rho_predict).all()
     
     return rho_predict
 
@@ -207,7 +260,7 @@ def k_fold_validate(K, params):
         chi2s.append(chi2)
         variances.append(np.var(rho_predict))
     
-    return np.mean(chi2s), np.mean(variances)
+    return np.mean(chi2s), np.median(chi2s), np.std(chi2s), np.mean(variances), np.median(variances), np.std(variances)
 
 @mem.cache
 def bootstrap_validate(params, nrounds=20, npatches=20):
@@ -240,7 +293,7 @@ def bootstrap_validate(params, nrounds=20, npatches=20):
         chi2s.append(chi2)
         variances.append(np.var(rho_predict))
     
-    return np.mean(chi2s), np.mean(variances)
+    return np.mean(chi2s), np.median(chi2s), np.std(chi2s), np.mean(variances), np.median(variances), np.std(variances)
 
 # Start of program:
 # We first try to find a decent fit with a large number of change points (cp)
@@ -286,9 +339,11 @@ while num_change_points > 2:
     #test_mean, test_variance = k_fold_validate(K=num_change_points * 2, params=params)
     
     # do a bootstrap validation leaving out some of the data and check the prediction
-    test_bias, test_variance = bootstrap_validate(params=params, 
+    a, b, c, d, e, f = bootstrap_validate(params=params, 
         npatches=args.num_test_patches, 
         nrounds=args.num_test_rounds)
+    test_bias = b
+    test_variance = e
     
     # now we find out which CP is easiest to remove:
     # this is similar to Bayesian blocks
@@ -346,11 +401,15 @@ for num_change_points, chi2, params, _, _, _, _ in sequence:
     rho_cp = np.asarray(params[num_change_points:])
     rho_predict = piecewise_model(phi, phi_cp, rho_cp)
     
-    print('%2d changepoints: chi2=%.1f' % (num_change_points, chi2))
     ax2.plot(phi / np.pi * 180, rho_predict, '-', lw=1, label='%d' % num_change_points)
     lon_predict, lat_predict = pol2cart(rho_predict, phi)
     lon_predict, lat_predict = lon_predict + ctr_lon, lat_predict + ctr_lat
     ax1.plot(lon_predict, lat_predict, lw=1, label='%d' % num_change_points)
+    # check if convex
+    hull = scipy.spatial.ConvexHull(np.transpose([lon_predict, lat_predict]))
+    convex = num_change_points == len(hull.simplices) // 2
+    
+    print('%2d changepoints: chi2=%.1f %s' % (num_change_points, chi2, '(convex)' if convex else ''))
 
 ax1.legend(loc='best')
 ax2.legend(loc='best')
@@ -365,15 +424,18 @@ num_change_points, chi2, params, tavg, tstd, avg, std = zip(*sequence)
 
 # bias is chi2 of prediction (tavg)
 # variance is variance of prediction minus square of mean prediction (tstd).
+bias = np.asarray(tavg)
+variance = np.asarray(tstd)
+variance = np.asarray(chi2)
 
 plt.plot(num_change_points, chi2, label='best fit chi2')
 #plt.plot(num_change_points, avg, label='CP removal: chi2 average')
 #plt.plot(num_change_points, std, label='CP removal: chi2 variance')
-plt.plot(num_change_points, np.asarray(tavg), label='bias')
-plt.plot(num_change_points, np.asarray(tstd), label='variance')
-plt.plot(num_change_points, (np.asarray(tstd) + np.asarray(tavg)), label='bias+variance', ls='--')
-best_ncp = np.argmin(np.asarray(tstd) + np.asarray(tavg))
-plt.plot(num_change_points[best_ncp], (np.asarray(tstd) + np.asarray(tavg))[best_ncp], 'o')
+plt.plot(num_change_points, bias, label='bias')
+plt.plot(num_change_points, variance, label='variance')
+plt.plot(num_change_points, bias + variance, label='bias+variance', ls='--')
+best_ncp = np.argmin(bias + variance)
+plt.plot(num_change_points[best_ncp], (bias + variance)[best_ncp], 'o')
 print('best number of change points: %d' % num_change_points[best_ncp])
 plt.yscale('log')
 plt.xlabel('number of change points')
