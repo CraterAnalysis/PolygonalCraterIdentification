@@ -1,7 +1,7 @@
 # PolygonalCraterIdentification
 Python code that fits a polygon to an impact crater rim trace.
 
-See the primary PolygonalCraterFitter.py file for additional information, which is repeated below in part:
+See the primary PolygonalCraterFitter.py file for additional information, which is repeated below in part and best viewed as "RAW" in GitHub.
 
 DEPENDENCIES:  This code requires several additional Python packages which
 can be freely installed via a normal installation process.  Those packages are
